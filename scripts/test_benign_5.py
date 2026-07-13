@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+"""
+随机抽取 5 个良性样本，使用优化后的 V2 特征提取器测试
+"""
+
+import json
+import sys
+import random
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+from wasm_feature_extractor import extract_features, format_features_for_prompt
+from pilot_experiment_v2 import analyze_sample_v2, parse_llm_json_response
+
+PROJECT_ROOT = Path(__file__).parent.parent
+BENIGN_DIR = PROJECT_ROOT / "data" / "WasmMal-main" / "benign"
+
+# 随机种子
+random.seed(42)
+
+# 获取所有良性样本
+all_benign = list(BENIGN_DIR.glob("*.wasm"))
+print(f"良性样本总数: {len(all_benign)}")
+
+# 随机抽取 5 个
+samples = random.sample(all_benign, 5)
+print(f"随机抽取: {len(samples)} 个")
+
+print("=" * 80)
+print("V2 优化测试 - 5 个随机良性样本")
+print("=" * 80)
+
+results = []
+correct = 0
+total = 0
+
+for i, wasm_path in enumerate(samples, 1):
+    filename = wasm_path.name
+    expected_label = "benign"
+    
+    print(f"\n[{i}/5] {filename[:50]}...")
+    
+    # 提取特征
+    features = extract_features(str(wasm_path))
+    if "error" in features:
+        print(f"  ✗ 特征提取失败: {features['error']}")
+        continue
+    
+    print(f"  可疑度评分: {features.get('suspicion_score', 0)}/100")
+    print(f"  可疑导出: {features['suspicious_exports'][:3]}")
+    print(f"  混淆导出: {features.get('obfuscated_exports', [])[:3]}")
+    print(f"  挖矿上下文: {any(v for v in features.get('mining_context', {}).values())}")
+    
+    # 调用 LLM
+    result = analyze_sample_v2(str(wasm_path), expected_label)
+    
+    total += 1
+    verdict = result.get('verdict', 'unknown')
+    is_correct = verdict == expected_label
+    if is_correct:
+        correct += 1
+    
+    print(f"  判定: {verdict} {'✓' if is_correct else '✗'}")
+    print(f"  类型: {result.get('malware_type', 'N/A')}")
+    
+    results.append({
+        "file": filename,
+        "expected": expected_label,
+        "verdict": verdict,
+        "malware_type": result.get('malware_type'),
+        "confidence": result.get('confidence'),
+        "reasoning": result.get('reasoning', ''),
+        "behavior_description": result.get('behavior_description', ''),
+        "raw_response": result.get('raw_response', ''),
+        "suspicion_score": features.get('suspicion_score', 0),
+        "correct": is_correct,
+    })
+    
+    # 避免 API 限流
+    time.sleep(3)
+
+# 统计结果
+print("\n" + "=" * 80)
+print("测试结果统计")
+print("=" * 80)
+
+print(f"\n有效样本数: {total}/5")
+print(f"正确识别: {correct}/{total}")
+print(f"精确率: {correct/total*100:.1f}%" if total > 0 else "精确率: N/A")
+
+# 分析误判
+misclassified = [r for r in results if not r['correct']]
+if misclassified:
+    print(f"\n误判样本 ({len(misclassified)} 个):")
+    for r in misclassified:
+        print(f"  {r['file'][:50]}...")
+        print(f"    判定: {r['verdict']}, 可疑度: {r['suspicion_score']}/100")
+else:
+    print("\n✓ 所有样本都被正确识别为良性！")
+
+# 按可疑度评分分布
+print(f"\n可疑度评分分布:")
+score_ranges = [(0, 30), (30, 50), (50, 70), (70, 100)]
+for low, high in score_ranges:
+    count = sum(1 for r in results if low <= r['suspicion_score'] < high)
+    print(f"  {low}-{high}: {count} 个样本")
+
+# 保存结果
+output_file = PROJECT_ROOT / "results" / "benign_5_test.json"
+with open(output_file, 'w') as f:
+    json.dump({
+        "test_type": "benign_5_random",
+        "total": total,
+        "correct": correct,
+        "precision": correct / total if total > 0 else 0,
+        "results": results,
+    }, f, indent=2, ensure_ascii=False)
+
+print(f"\n结果已保存到: {output_file}")

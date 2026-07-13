@@ -1,0 +1,16 @@
+# 敏感配置
+.env
+
+# 数据集（太大不提交）
+data/WasmMal-main/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# 实验结果
+results/
+
+# macOS
+.DS_Store
